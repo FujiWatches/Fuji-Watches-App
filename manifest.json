@@ -1,0 +1,24 @@
+{
+  "name": "Fuji Watches - Controle de Estoque",
+  "short_name": "Fuji Watches",
+  "description": "Controle de estoque de relógios da Fuji Watches",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#12141b",
+  "theme_color": "#12141b",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
