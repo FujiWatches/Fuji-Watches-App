@@ -132,7 +132,8 @@
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import {
-  getFirestore, doc, getDoc, setDoc, onSnapshot
+  getFirestore, doc, getDoc, setDoc, deleteDoc, onSnapshot,
+  collection, getDocs, writeBatch
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 const firebaseConfig = {
@@ -151,7 +152,12 @@ window.__fbDb = fbDb;
 window.__fbDoc = doc;
 window.__fbGetDoc = getDoc;
 window.__fbSetDoc = setDoc;
+window.__fbDeleteDoc = deleteDoc;
 window.__fbOnSnapshot = onSnapshot;
+window.__fbCollection = collection;
+window.__fbGetDocs = getDocs;
+window.__fbWriteBatch = writeBatch;
+
 
 
 const DIAL_ICON = `<svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" class="dial-mark">
@@ -171,6 +177,7 @@ const LOGO_FULL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAArgAAAJYCAYAAAC
 const ICON_DASH = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 3v9l6 3"/></svg>`;
 const ICON_LIST = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="4" rx="1"/><rect x="3" y="11" width="18" height="4" rx="1"/><rect x="3" y="17" width="18" height="4" rx="1"/></svg>`;
 const ICON_MONTHLY = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></svg>`;
+const ICON_COSTS = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12V7a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-1"/><path d="M21 12a2 2 0 0 1-2 2h-2a2 2 0 0 1 0-4h2a2 2 0 0 1 2 2Z"/></svg>`;
 
 const STARTER_ITEMS = [
   {id:cid(), owner:"Léo", model:"Citizen Tsuyosa 37mm", color:"Ice Blue", condition:"Usado", purchaseDate:"", purchasePrice:2600, expectedSale:"", status:"Disponível", saleDate:"", realSale:""},
@@ -200,12 +207,15 @@ const state = {
   unlocked:false,
   pin:null,
   items:null,
+  costs:null,
   tab:'dashboard',
   search:'',
   filterOwner:'Todos',
   filterStatus:'Todos',
   modalOpen:false,
   editingItem:null,
+  costModalOpen:false,
+  editingCost:null,
   loading:true,
   errorMsg:'',
   lastSync:null,
@@ -214,6 +224,7 @@ const state = {
 
 const root = document.getElementById('root');
 let unsubscribeItems = null;
+let unsubscribeCosts = null;
 
 async function loadPin(){
   try{
@@ -225,31 +236,65 @@ async function savePin(pin){
   await window.__fbSetDoc(window.__fbDoc(window.__fbDb,'fujiwatches','pin'), {value: pin});
   state.pin = pin;
 }
+const ITEMS_COL = 'fujiwatches_items';
+
 async function loadItems(){
   try{
-    const snap = await window.__fbGetDoc(window.__fbDoc(window.__fbDb,'fujiwatches','items'));
-    state.items = snap.exists() ? JSON.parse(snap.data().payload) : null;
+    const colRef = window.__fbCollection(window.__fbDb, ITEMS_COL);
+    const snap = await window.__fbGetDocs(colRef);
+    if(!snap.empty){
+      state.items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    } else {
+      // Nothing in the new collection yet — try migrating from the old single-doc format
+      const legacy = await window.__fbGetDoc(window.__fbDoc(window.__fbDb,'fujiwatches','items'));
+      if(legacy.exists() && legacy.data().payload){
+        const oldItems = JSON.parse(legacy.data().payload);
+        const batch = window.__fbWriteBatch(window.__fbDb);
+        oldItems.forEach(it => {
+          const ref = window.__fbDoc(window.__fbDb, ITEMS_COL, it.id);
+          batch.set(ref, it);
+        });
+        await batch.commit();
+        state.items = oldItems;
+      } else {
+        state.items = null;
+      }
+    }
     state.lastSync = new Date();
   }catch(e){ console.error('loadItems error', e); state.items = null; }
   if(!state.items){
     state.items = STARTER_ITEMS;
-    await saveItems();
+    const batch = window.__fbWriteBatch(window.__fbDb);
+    state.items.forEach(it => {
+      const ref = window.__fbDoc(window.__fbDb, ITEMS_COL, it.id);
+      batch.set(ref, it);
+    });
+    await batch.commit();
   }
   startRealtimeSync();
 }
-async function saveItems(){
+
+async function saveItem(item){
   try{
-    await window.__fbSetDoc(window.__fbDoc(window.__fbDb,'fujiwatches','items'), {payload: JSON.stringify(state.items)});
+    const ref = window.__fbDoc(window.__fbDb, ITEMS_COL, item.id);
+    await window.__fbSetDoc(ref, item);
     state.lastSync = new Date();
-  }catch(e){ console.error('saveItems error', e); showToast('Erro ao salvar. Verifique sua internet.'); }
+  }catch(e){ console.error('saveItem error', e); showToast('Erro ao salvar. Verifique sua internet.'); }
+}
+
+async function deleteItemRemote(id){
+  try{
+    const ref = window.__fbDoc(window.__fbDb, ITEMS_COL, id);
+    await window.__fbDeleteDoc(ref);
+    state.lastSync = new Date();
+  }catch(e){ console.error('deleteItem error', e); showToast('Erro ao remover. Verifique sua internet.'); }
 }
 
 function startRealtimeSync(){
   if(unsubscribeItems) return; // already listening
-  unsubscribeItems = window.__fbOnSnapshot(window.__fbDoc(window.__fbDb,'fujiwatches','items'), (snap)=>{
-    if(!snap.exists()) return;
-    const incoming = JSON.parse(snap.data().payload);
-    // avoid re-render loop if data is identical
+  const colRef = window.__fbCollection(window.__fbDb, ITEMS_COL);
+  unsubscribeItems = window.__fbOnSnapshot(colRef, (snap)=>{
+    const incoming = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     if(JSON.stringify(incoming) === JSON.stringify(state.items)) return;
     state.items = incoming;
     state.lastSync = new Date();
@@ -263,6 +308,45 @@ function showToast(msg){
   t.textContent=msg;
   document.body.appendChild(t);
   setTimeout(()=>t.remove(), 2200);
+}
+
+const COSTS_COL = 'fujiwatches_costs';
+
+async function loadCosts(){
+  try{
+    const colRef = window.__fbCollection(window.__fbDb, COSTS_COL);
+    const snap = await window.__fbGetDocs(colRef);
+    state.costs = snap.empty ? [] : snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  }catch(e){ console.error('loadCosts error', e); state.costs = []; }
+  startRealtimeSyncCosts();
+}
+
+async function saveCost(cost){
+  try{
+    const ref = window.__fbDoc(window.__fbDb, COSTS_COL, cost.id);
+    await window.__fbSetDoc(ref, cost);
+    state.lastSync = new Date();
+  }catch(e){ console.error('saveCost error', e); showToast('Erro ao salvar. Verifique sua internet.'); }
+}
+
+async function deleteCostRemote(id){
+  try{
+    const ref = window.__fbDoc(window.__fbDb, COSTS_COL, id);
+    await window.__fbDeleteDoc(ref);
+    state.lastSync = new Date();
+  }catch(e){ console.error('deleteCost error', e); showToast('Erro ao remover. Verifique sua internet.'); }
+}
+
+function startRealtimeSyncCosts(){
+  if(unsubscribeCosts) return;
+  const colRef = window.__fbCollection(window.__fbDb, COSTS_COL);
+  unsubscribeCosts = window.__fbOnSnapshot(colRef, (snap)=>{
+    const incoming = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    if(JSON.stringify(incoming) === JSON.stringify(state.costs)) return;
+    state.costs = incoming;
+    state.lastSync = new Date();
+    if(state.unlocked && !state.modalOpen && !state.costModalOpen) render();
+  }, (err)=>{ console.error('realtime sync costs error', err); });
 }
 
 async function init(){
@@ -290,6 +374,11 @@ function render(){
   if(state.items===null){
     root.innerHTML = `<div class="loading">Carregando estoque...</div>`;
     loadItems().then(render);
+    return;
+  }
+  if(state.costs===null){
+    root.innerHTML = `<div class="loading">Carregando custos...</div>`;
+    loadCosts().then(render);
     return;
   }
   renderApp();
@@ -365,15 +454,16 @@ function renderApp(){
   const content = document.createElement('div');
   if(state.tab==='dashboard') renderDashboard(content);
   else if(state.tab==='list') renderList(content);
-  else renderMonthly(content);
+  else if(state.tab==='monthly') renderMonthly(content);
+  else renderCosts(content);
   wrap.appendChild(content);
 
-  // FAB only on list tab
-  if(state.tab==='list'){
+  // FAB on list and costs tabs
+  if(state.tab==='list' || state.tab==='costs'){
     const fab = document.createElement('button');
     fab.className='fab';
     fab.textContent='+';
-    fab.onclick = ()=>openModal(null);
+    fab.onclick = ()=> state.tab==='list' ? openModal(null) : openCostModal(null);
     wrap.appendChild(fab);
   }
 
@@ -383,6 +473,7 @@ function renderApp(){
     <button class="tab-btn ${state.tab==='dashboard'?'active':''}" id="tabDash">${ICON_DASH}Painel</button>
     <button class="tab-btn ${state.tab==='list'?'active':''}" id="tabList">${ICON_LIST}Estoque</button>
     <button class="tab-btn ${state.tab==='monthly'?'active':''}" id="tabMonthly">${ICON_MONTHLY}Mensal</button>
+    <button class="tab-btn ${state.tab==='costs'?'active':''}" id="tabCosts">${ICON_COSTS}Custos</button>
   `;
   wrap.appendChild(tabbar);
 
@@ -390,17 +481,19 @@ function renderApp(){
   document.getElementById('tabDash').onclick=()=>{state.tab='dashboard';render();};
   document.getElementById('tabList').onclick=()=>{state.tab='list';render();};
   document.getElementById('tabMonthly').onclick=()=>{state.tab='monthly';render();};
+  document.getElementById('tabCosts').onclick=()=>{state.tab='costs';render();};
   document.getElementById('syncBtn').onclick = async ()=>{
     if(state.syncing) return;
     state.syncing = true;
     render();
-    await loadItems();
+    await Promise.all([loadItems(), loadCosts()]);
     state.syncing = false;
     render();
     showToast('Dados atualizados.');
   };
 
   if(state.modalOpen) renderModal();
+  if(state.costModalOpen) renderCostModal();
 }
 
 function computeStats(){
@@ -420,6 +513,7 @@ function computeStats(){
     if(i.status==='Vendido' && i.realSale!=="") return s + (num(i.realSale)-num(i.purchasePrice));
     return s;
   },0);
+
   return {total,available,sold,reserved,invested,predictedRevenue,predictedMargin,realizedProfit};
 }
 
@@ -573,10 +667,10 @@ function monthLabel(key){
 
 function buildMonthlyData(){
   const num = v => (v==="" || v===null || v===undefined || isNaN(v)) ? 0 : Number(v);
-  const months = {}; // key -> { purchCount, purchTotal, saleCount, saleTotal, profitTotal }
+  const months = {}; // key -> { purchCount, purchTotal, saleCount, saleTotal, profitTotal, costsTotal, netProfit }
 
   function ensure(key){
-    if(!months[key]) months[key] = {purchCount:0, purchTotal:0, saleCount:0, saleTotal:0, profitTotal:0};
+    if(!months[key]) months[key] = {purchCount:0, purchTotal:0, saleCount:0, saleTotal:0, profitTotal:0, costsTotal:0, netProfit:0};
     return months[key];
   }
 
@@ -594,6 +688,14 @@ function buildMonthlyData(){
       m2.profitTotal += (num(i.realSale) - num(i.purchasePrice));
     }
   });
+
+  (state.costs||[]).forEach(c=>{
+    const cKey = c.date ? c.date.slice(0,7) : 'sem-data';
+    const m = ensure(cKey);
+    m.costsTotal += num(c.amount);
+  });
+
+  Object.values(months).forEach(m=>{ m.netProfit = m.profitTotal - m.costsTotal; });
 
   const keys = Object.keys(months).filter(k=>k!=='sem-data').sort().reverse();
   if(months['sem-data']) keys.push('sem-data');
@@ -629,6 +731,7 @@ function renderMonthly(container){
     card.style.marginBottom='12px';
 
     const profitColor = m.profitTotal > 0 ? 'var(--ok)' : (m.profitTotal < 0 ? 'var(--sold)' : 'var(--muted)');
+    const netColor = m.netProfit > 0 ? 'var(--ok)' : (m.netProfit < 0 ? 'var(--sold)' : 'var(--muted)');
 
     card.innerHTML = `
       <div style="font-family:'Cormorant Garamond',serif;font-size:17px;font-weight:700;color:var(--gold-bright);margin-bottom:12px;text-transform:capitalize;">${monthLabel(key)}</div>
@@ -643,14 +746,143 @@ function renderMonthly(container){
         </div>
       </div>
       <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;">
-        <span style="font-size:11.5px;color:var(--muted);">Lucro do mês</span>
-        <span style="font-family:'Cormorant Garamond',serif;font-size:18px;font-weight:700;color:${profitColor};">${fmtBRL(m.profitTotal)}</span>
+        <span style="font-size:11.5px;color:var(--muted);">Lucro bruto do mês</span>
+        <span style="font-family:'Cormorant Garamond',serif;font-size:16px;font-weight:700;color:${profitColor};">${fmtBRL(m.profitTotal)}</span>
+      </div>
+      <div style="margin-top:6px;display:flex;justify-content:space-between;align-items:center;">
+        <span style="font-size:11.5px;color:var(--muted);">Custos operacionais</span>
+        <span style="font-family:'Cormorant Garamond',serif;font-size:16px;font-weight:700;color:var(--sold);">${m.costsTotal>0?'-':''}${fmtBRL(m.costsTotal)}</span>
+      </div>
+      <div style="margin-top:6px;padding-top:8px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;">
+        <span style="font-size:12px;color:var(--text);font-weight:600;">Lucro líquido</span>
+        <span style="font-family:'Cormorant Garamond',serif;font-size:19px;font-weight:700;color:${netColor};">${fmtBRL(m.netProfit)}</span>
       </div>
     `;
     section.appendChild(card);
   });
 
   container.appendChild(section);
+}
+
+const COST_CATEGORIES = ['Marketing/Anúncios','Embalagem/Frete','Taxas de plataforma','Manutenção','Outro'];
+
+function renderCosts(container){
+  const section = document.createElement('div');
+  section.className='section';
+  section.style.paddingTop='4px';
+
+  const num = v => (v==="" || v===null || v===undefined || isNaN(v)) ? 0 : Number(v);
+  const costs = (state.costs||[]).slice().sort((a,b)=> (b.date||'').localeCompare(a.date||''));
+  const total = costs.reduce((s,c)=>s+num(c.amount),0);
+
+  const totalCard = document.createElement('div');
+  totalCard.style.cssText = 'background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:16px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;';
+  totalCard.innerHTML = `
+    <span style="font-size:12px;color:var(--muted);">Total em custos registrados</span>
+    <span style="font-family:'Cormorant Garamond',serif;font-size:22px;font-weight:700;color:var(--sold);">${fmtBRL(total)}</span>
+  `;
+  section.appendChild(totalCard);
+
+  const list = document.createElement('div');
+  list.className = 'card-list';
+
+  if(costs.length===0){
+    list.innerHTML = `<div class="empty">Nenhum custo registrado ainda. Toque em "+" para adicionar.</div>`;
+  } else {
+    costs.forEach(c=>{
+      const card = document.createElement('div');
+      card.className = 'watch-card';
+      card.innerHTML = `
+        <div class="wc-top">
+          <div>
+            <div class="wc-model">${c.description||'(sem descrição)'}</div>
+            <div class="wc-sub">${c.category||'Outro'} · ${c.date?fmtDate(c.date):'sem data'}</div>
+          </div>
+          <span style="font-family:'Cormorant Garamond',serif;font-size:17px;font-weight:700;color:var(--sold);">${fmtBRL(c.amount)}</span>
+        </div>
+      `;
+      card.onclick = ()=>openCostModal(c);
+      list.appendChild(card);
+    });
+  }
+  section.appendChild(list);
+  container.appendChild(section);
+}
+
+function openCostModal(cost){
+  state.editingCost = cost ? {...cost} : {
+    id:cid(), description:'', category:'Marketing/Anúncios', amount:'', date:new Date().toISOString().slice(0,10)
+  };
+  state.costModalOpen = true;
+  render();
+}
+function closeCostModal(){
+  state.costModalOpen = false;
+  state.editingCost = null;
+  render();
+}
+
+function renderCostModal(){
+  const c = state.editingCost;
+  const isEdit = (state.costs||[]).some(x=>x.id===c.id);
+  const backdrop = document.createElement('div');
+  backdrop.className='modal-backdrop';
+  backdrop.onclick = (e)=>{ if(e.target===backdrop) closeCostModal(); };
+
+  const modal = document.createElement('div');
+  modal.className='modal';
+  modal.innerHTML = `
+    <h3>${isEdit?'Editar custo':'Adicionar custo'}</h3>
+    <div class="field"><label>Descrição</label><input id="c_desc" value="${c.description||''}" placeholder="Ex: Anúncio Instagram" /></div>
+    <div class="field"><label>Categoria</label>
+      <select id="c_category">
+        ${COST_CATEGORIES.map(cat=>`<option value="${cat}" ${c.category===cat?'selected':''}>${cat}</option>`).join('')}
+      </select>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Valor (R$)</label><input type="number" id="c_amount" value="${c.amount}" placeholder="0,00" /></div>
+      <div class="field"><label>Data</label><input type="date" id="c_date" value="${c.date||''}" /></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="cCancelBtn">Cancelar</button>
+      <button class="btn btn-gold" id="cSaveBtn">Salvar</button>
+    </div>
+    ${isEdit?'<button class="danger-link" id="cDelBtn">Remover custo</button>':''}
+  `;
+  backdrop.appendChild(modal);
+  root.appendChild(backdrop);
+
+  document.getElementById('cCancelBtn').onclick = closeCostModal;
+  if(isEdit) document.getElementById('cDelBtn').onclick = async ()=>{
+    if(confirm('Remover este custo?')){
+      state.costs = state.costs.filter(x=>x.id!==c.id);
+      await deleteCostRemote(c.id);
+      closeCostModal();
+      showToast('Custo removido.');
+    }
+  };
+  document.getElementById('cSaveBtn').onclick = async ()=>{
+    const description = document.getElementById('c_desc').value.trim();
+    if(!description){ showToast('Informe uma descrição.'); return; }
+    const btn = document.getElementById('cSaveBtn');
+    btn.disabled = true;
+    btn.textContent = 'Salvando...';
+    const updated = {
+      id: c.id,
+      description,
+      category: document.getElementById('c_category').value,
+      amount: document.getElementById('c_amount').value,
+      date: document.getElementById('c_date').value,
+    };
+    if(isEdit){
+      state.costs = state.costs.map(x=>x.id===c.id?updated:x);
+    } else {
+      state.costs.push(updated);
+    }
+    await saveCost(updated);
+    closeCostModal();
+    showToast('Salvo com sucesso.');
+  };
 }
 
 function openModal(item){
@@ -724,7 +956,7 @@ function renderModal(){
   if(isEdit) document.getElementById('delBtn').onclick = async ()=>{
     if(confirm('Remover este relógio do estoque?')){
       state.items = state.items.filter(i=>i.id!==it.id);
-      await saveItems();
+      await deleteItemRemote(it.id);
       closeModal();
       showToast('Relógio removido.');
     }
@@ -732,6 +964,9 @@ function renderModal(){
   document.getElementById('saveBtn').onclick = async ()=>{
     const model = document.getElementById('f_model').value.trim();
     if(!model){ showToast('Informe o modelo do relógio.'); return; }
+    const saveBtnEl = document.getElementById('saveBtn');
+    saveBtnEl.disabled = true;
+    saveBtnEl.textContent = 'Salvando...';
     const updated = {
       id: it.id,
       owner: document.getElementById('f_owner').value,
@@ -742,15 +977,15 @@ function renderModal(){
       purchasePrice: document.getElementById('f_pprice').value,
       expectedSale: document.getElementById('f_esale').value,
       status: document.getElementById('f_status').value,
-      saleDate: document.getElementById('f_sdate') ? document.getElementById('f_sdate').value : it.saleDate,
-      realSale: document.getElementById('f_rsale') ? document.getElementById('f_rsale').value : it.realSale,
+      saleDate: document.getElementById('f_sdate') ? document.getElementById('f_sdate').value : (it.saleDate||''),
+      realSale: document.getElementById('f_rsale') ? document.getElementById('f_rsale').value : (it.realSale||''),
     };
     if(isEdit){
       state.items = state.items.map(i=>i.id===it.id?updated:i);
     } else {
       state.items.push(updated);
     }
-    await saveItems();
+    await saveItem(updated);
     closeModal();
     showToast('Salvo com sucesso.');
   };
