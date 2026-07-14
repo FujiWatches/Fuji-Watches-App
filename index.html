@@ -115,7 +115,7 @@
   .field input, .field select{width:100%;background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:11px 12px;color:var(--text);font-size:13.5px;font-family:'Inter',sans-serif;}
   .field input:focus, .field select:focus{outline:none;border-color:var(--gold);}
   .field-row{display:flex;gap:10px;}
-  .field-row .field{flex:1;}
+  .field-row .field{flex:1;min-width:0;}
   .modal-actions{display:flex;gap:10px;margin-top:18px;}
   .modal-actions .btn{flex:1;}
   .danger-link{display:block;text-align:center;color:var(--sold);font-size:12.5px;margin-top:16px;cursor:pointer;background:none;border:none;width:100%;padding:8px;}
@@ -767,5 +767,3 @@ if('serviceWorker' in navigator){
 </script>
 </body>
 </html>
-
-
