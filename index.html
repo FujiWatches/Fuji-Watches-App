@@ -497,7 +497,7 @@ function computeStats(){
     return s;
   },0);
   const realizedProfit = items.reduce((s,i)=>{
-    if(i.status==='Vendido' && i.realSale!=="") return s + (num(i.realSale)-num(i.purchasePrice));
+    if(i.status==='Vendido' && i.realSale!=="") return s + (num(i.realSale)-num(i.purchasePrice)-num(i.saleCost));
     return s;
   },0);
 
@@ -672,7 +672,7 @@ function buildMonthlyData(){
       const m2 = ensure(sKey);
       m2.saleCount += 1;
       m2.saleTotal += num(i.realSale);
-      m2.profitTotal += (num(i.realSale) - num(i.purchasePrice));
+      m2.profitTotal += (num(i.realSale) - num(i.purchasePrice) - num(i.saleCost));
     }
   });
 
@@ -733,7 +733,7 @@ function renderMonthly(container){
         </div>
       </div>
       <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;">
-        <span style="font-size:11.5px;color:var(--muted);">Lucro bruto do mês</span>
+        <span style="font-size:11.5px;color:var(--muted);">Lucro das vendas</span>
         <span style="font-family:'Cormorant Garamond',serif;font-size:16px;font-weight:700;color:${profitColor};">${fmtBRL(m.profitTotal)}</span>
       </div>
       <div style="margin-top:6px;display:flex;justify-content:space-between;align-items:center;">
@@ -751,7 +751,7 @@ function renderMonthly(container){
   container.appendChild(section);
 }
 
-const COST_CATEGORIES = ['Marketing/Anúncios','Embalagem/Frete','Taxas de plataforma','Manutenção','Outro'];
+const COST_CATEGORIES = ['Marketing/Tráfego pago','Combustível','Embalagem','Manutenção','Outro'];
 
 function renderCosts(container){
   const section = document.createElement('div');
@@ -798,7 +798,7 @@ function renderCosts(container){
 
 function openCostModal(cost){
   state.editingCost = cost ? {...cost} : {
-    id:cid(), description:'', category:'Marketing/Anúncios', amount:'', date:new Date().toISOString().slice(0,10)
+    id:cid(), description:'', category:'Marketing/Tráfego pago', amount:'', date:new Date().toISOString().slice(0,10)
   };
   state.costModalOpen = true;
   render();
@@ -1042,6 +1042,7 @@ function renderModal(){
         <div class="field"><label>Data da venda</label><input type="date" id="f_sdate" value="${it.saleDate||''}" /></div>
         <div class="field"><label>Valor real (R$)</label><input type="number" id="f_rsale" value="${it.realSale}" placeholder="0,00" /></div>
       </div>
+      <div class="field"><label>Custo da venda (R$) — taxa de plataforma, frete, etc.</label><input type="number" id="f_scost" value="${it.saleCost||''}" placeholder="0,00" /></div>
     </div>
     <div class="modal-actions">
       <button class="btn btn-ghost" id="cancelBtn">Cancelar</button>
@@ -1082,6 +1083,7 @@ function renderModal(){
       status: document.getElementById('f_status').value,
       saleDate: document.getElementById('f_sdate') ? document.getElementById('f_sdate').value : (it.saleDate||''),
       realSale: document.getElementById('f_rsale') ? document.getElementById('f_rsale').value : (it.realSale||''),
+      saleCost: document.getElementById('f_scost') ? document.getElementById('f_scost').value : (it.saleCost||''),
     };
     if(isEdit){
       state.items = state.items.map(i=>i.id===it.id?updated:i);
