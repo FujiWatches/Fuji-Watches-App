@@ -219,6 +219,9 @@ const state = {
   orders:null,
   orderModalOpen:false,
   editingOrder:null,
+  withdrawals:null,
+  withdrawalModalOpen:false,
+  editingWithdrawal:null,
   loading:true,
   errorMsg:'',
   lastSync:null,
@@ -229,6 +232,7 @@ const root = document.getElementById('root');
 let unsubscribeItems = null;
 let unsubscribeCosts = null;
 let unsubscribeOrders = null;
+let unsubscribeWithdrawals = null;
 
 const ITEMS_COL = 'fujiwatches_items';
 
@@ -382,6 +386,45 @@ function startRealtimeSyncOrders(){
   }, (err)=>{ console.error('realtime sync orders error', err); });
 }
 
+const WITHDRAWALS_COL = 'fujiwatches_withdrawals';
+
+async function loadWithdrawals(){
+  try{
+    const colRef = window.__fbCollection(window.__fbDb, WITHDRAWALS_COL);
+    const snap = await window.__fbGetDocs(colRef);
+    state.withdrawals = snap.empty ? [] : snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  }catch(e){ console.error('loadWithdrawals error', e); state.withdrawals = []; }
+  startRealtimeSyncWithdrawals();
+}
+
+async function saveWithdrawal(w){
+  try{
+    const ref = window.__fbDoc(window.__fbDb, WITHDRAWALS_COL, w.id);
+    await window.__fbSetDoc(ref, w);
+    state.lastSync = new Date();
+  }catch(e){ console.error('saveWithdrawal error', e); showToast('Erro ao salvar. Verifique sua internet.'); }
+}
+
+async function deleteWithdrawalRemote(id){
+  try{
+    const ref = window.__fbDoc(window.__fbDb, WITHDRAWALS_COL, id);
+    await window.__fbDeleteDoc(ref);
+    state.lastSync = new Date();
+  }catch(e){ console.error('deleteWithdrawal error', e); showToast('Erro ao remover. Verifique sua internet.'); }
+}
+
+function startRealtimeSyncWithdrawals(){
+  if(unsubscribeWithdrawals) return;
+  const colRef = window.__fbCollection(window.__fbDb, WITHDRAWALS_COL);
+  unsubscribeWithdrawals = window.__fbOnSnapshot(colRef, (snap)=>{
+    const incoming = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    if(JSON.stringify(incoming) === JSON.stringify(state.withdrawals)) return;
+    state.withdrawals = incoming;
+    state.lastSync = new Date();
+    if(state.unlocked && !state.modalOpen && !state.costModalOpen && !state.orderModalOpen && !state.withdrawalModalOpen) render();
+  }, (err)=>{ console.error('realtime sync withdrawals error', err); });
+}
+
 async function init(){
   state.unlocked = true;
   state.loading = false;
@@ -408,6 +451,11 @@ function render(){
   if(state.orders===null){
     root.innerHTML = `<div class="loading">Carregando pedidos...</div>`;
     loadOrders().then(render);
+    return;
+  }
+  if(state.withdrawals===null){
+    root.innerHTML = `<div class="loading">Carregando retiradas...</div>`;
+    loadWithdrawals().then(render);
     return;
   }
   renderApp();
@@ -472,7 +520,7 @@ function renderApp(){
     if(state.syncing) return;
     state.syncing = true;
     render();
-    await Promise.all([loadItems(), loadCosts(), loadOrders()]);
+    await Promise.all([loadItems(), loadCosts(), loadOrders(), loadWithdrawals()]);
     state.syncing = false;
     render();
     showToast('Dados atualizados.');
@@ -481,6 +529,7 @@ function renderApp(){
   if(state.modalOpen) renderModal();
   if(state.costModalOpen) renderCostModal();
   if(state.orderModalOpen) renderOrderModal();
+  if(state.withdrawalModalOpen) renderWithdrawalModal();
 }
 
 function computeStats(){
@@ -501,7 +550,12 @@ function computeStats(){
     return s;
   },0);
 
-  return {total,available,sold,reserved,invested,predictedRevenue,predictedMargin,realizedProfit};
+  const totalCosts = (state.costs||[]).reduce((s,c)=>s+num(c.amount),0);
+  const totalWithdrawals = (state.withdrawals||[]).reduce((s,w)=>s+num(w.amount),0);
+  const cashOnHand = realizedProfit - totalCosts - totalWithdrawals;
+
+  return {total,available,sold,reserved,invested,predictedRevenue,predictedMargin,realizedProfit,
+    totalCosts, totalWithdrawals, cashOnHand};
 }
 
 function renderDashboard(container){
@@ -537,24 +591,63 @@ function renderDashboard(container){
       <div class="stat-box neu"><div class="lbl">Total Investido</div><div class="val">${fmtBRL(s.invested)}</div></div>
       <div class="stat-box neu"><div class="lbl">Previsto em Vendas</div><div class="val">${fmtBRL(s.predictedRevenue)}</div></div>
       <div class="stat-box pos"><div class="lbl">Margem Prevista</div><div class="val">${fmtBRL(s.predictedMargin)}</div></div>
-      <div class="stat-box pos"><div class="lbl">Lucro Realizado</div><div class="val">${fmtBRL(s.realizedProfit)}</div></div>
+      <div class="stat-box ${s.cashOnHand>=0?'pos':''}"><div class="lbl">Total em Caixa</div><div class="val" style="${s.cashOnHand<0?'color:var(--sold);':''}">${fmtBRL(s.cashOnHand)}</div></div>
     </div>
-
-    <div class="section-title">Por consignante</div>
   `;
   container.appendChild(section);
 
-  const ownerBlock = document.createElement('div');
-  ownerBlock.style.padding = '0 18px 10px';
-  const owners = {};
-  state.items.forEach(i=>{ owners[i.owner] = (owners[i.owner]||0)+1; });
-  Object.entries(owners).forEach(([owner,count])=>{
-    const row = document.createElement('div');
-    row.className='owner-row';
-    row.innerHTML = `<span>${owner}</span><b>${count} relógio${count>1?'s':''}</b>`;
-    ownerBlock.appendChild(row);
-  });
-  container.appendChild(ownerBlock);
+  renderWithdrawalsSection(container, s);
+}
+
+function renderWithdrawalsSection(container, s){
+  const wsection = document.createElement('div');
+  wsection.className='section';
+  wsection.style.paddingTop='0';
+
+  const header = document.createElement('div');
+  header.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin:14px 0 10px;';
+  header.innerHTML = `
+    <div class="section-title" style="margin:0;">Retiradas</div>
+    <button id="addWithdrawalBtn" style="background:var(--surface-2);border:1px solid var(--border);border-radius:9px;padding:6px 12px;font-size:12px;font-weight:600;color:var(--gold-bright);cursor:pointer;">+ Adicionar</button>
+  `;
+  wsection.appendChild(header);
+
+  const summaryRow = document.createElement('div');
+  summaryRow.className = 'owner-row';
+  summaryRow.innerHTML = `<span>Total já retirado</span><b>${fmtBRL(s.totalWithdrawals)}</b>`;
+  wsection.appendChild(summaryRow);
+
+  const list = document.createElement('div');
+  list.style.marginTop = '10px';
+  const withdrawals = (state.withdrawals||[]).slice().sort((a,b)=>(b.date||'').localeCompare(a.date||''));
+  if(withdrawals.length===0){
+    const empty = document.createElement('div');
+    empty.className = 'empty';
+    empty.style.padding = '20px';
+    empty.textContent = 'Nenhuma retirada registrada ainda.';
+    list.appendChild(empty);
+  } else {
+    withdrawals.forEach(w=>{
+      const card = document.createElement('div');
+      card.className = 'watch-card';
+      card.style.marginBottom = '8px';
+      card.innerHTML = `
+        <div class="wc-top">
+          <div>
+            <div class="wc-model">${w.person||'—'}</div>
+            <div class="wc-sub">${w.date?fmtDate(w.date):'sem data'}${w.notes?' · '+w.notes:''}</div>
+          </div>
+          <span style="font-family:'Cormorant Garamond',serif;font-size:17px;font-weight:700;color:var(--sold);">${fmtBRL(w.amount)}</span>
+        </div>
+      `;
+      card.onclick = ()=>openWithdrawalModal(w);
+      list.appendChild(card);
+    });
+  }
+  wsection.appendChild(list);
+  container.appendChild(wsection);
+
+  header.querySelector('#addWithdrawalBtn').onclick = ()=>openWithdrawalModal(null);
 }
 
 function renderList(container){
@@ -695,9 +788,37 @@ function renderMonthly(container){
   section.style.paddingTop='4px';
 
   const {months, keys} = buildMonthlyData();
+  const s = computeStats();
+  const num = v => (v==="" || v===null || v===undefined || isNaN(v)) ? 0 : Number(v);
+  const totalSold = state.items.filter(i=>i.status==='Vendido' && i.realSale!=="");
+  const totalRevenue = totalSold.reduce((acc,i)=>acc+num(i.realSale),0);
+
+  const summaryTitle = document.createElement('div');
+  summaryTitle.className='section-title';
+  summaryTitle.style.marginTop='4px';
+  summaryTitle.textContent = 'Resumo geral (desde o início)';
+  section.appendChild(summaryTitle);
+
+  const summaryCard = document.createElement('div');
+  summaryCard.style.cssText = 'background:var(--surface);border:1px solid var(--gold);border-radius:16px;padding:16px;margin-bottom:18px;';
+  summaryCard.innerHTML = `
+    <div style="display:flex;justify-content:space-between;padding:5px 0;font-size:13px;"><span style="color:var(--muted);">Total investido</span><b>${fmtBRL(s.invested)}</b></div>
+    <div style="display:flex;justify-content:space-between;padding:5px 0;font-size:13px;"><span style="color:var(--muted);">Total vendido (${totalSold.length})</span><b>${fmtBRL(totalRevenue)}</b></div>
+    <div style="display:flex;justify-content:space-between;padding:5px 0;font-size:13px;border-top:1px solid var(--border);margin-top:4px;padding-top:9px;"><span style="color:var(--muted);">Lucro total das vendas</span><b style="color:${s.realizedProfit>=0?'var(--ok)':'var(--sold)'};">${fmtBRL(s.realizedProfit)}</b></div>
+    <div style="display:flex;justify-content:space-between;padding:5px 0;font-size:13px;"><span style="color:var(--muted);">Custos operacionais</span><b style="color:var(--sold);">${s.totalCosts>0?'-':''}${fmtBRL(s.totalCosts)}</b></div>
+    <div style="display:flex;justify-content:space-between;padding:5px 0;font-size:13px;"><span style="color:var(--muted);">Retiradas</span><b style="color:var(--sold);">${s.totalWithdrawals>0?'-':''}${fmtBRL(s.totalWithdrawals)}</b></div>
+    <div style="display:flex;justify-content:space-between;align-items:center;padding-top:10px;margin-top:6px;border-top:1px solid var(--border);">
+      <span style="font-size:13px;font-weight:600;">Total em caixa</span>
+      <span style="font-family:'Cormorant Garamond',serif;font-size:21px;font-weight:700;color:${s.cashOnHand>=0?'var(--ok)':'var(--sold)'};">${fmtBRL(s.cashOnHand)}</span>
+    </div>
+  `;
+  section.appendChild(summaryCard);
 
   if(keys.length===0){
-    section.innerHTML = `<div class="empty">Sem dados suficientes ainda. Cadastre data de compra e de venda nos relógios para ver a análise mensal.</div>`;
+    const emptyDiv = document.createElement('div');
+    emptyDiv.className = 'empty';
+    emptyDiv.textContent = 'Sem dados suficientes ainda para o detalhamento mês a mês. Cadastre data de compra e de venda nos relógios para ver essa análise.';
+    section.appendChild(emptyDiv);
     container.appendChild(section);
     return;
   }
@@ -705,7 +826,7 @@ function renderMonthly(container){
   const intro = document.createElement('div');
   intro.className='section-title';
   intro.style.marginTop='4px';
-  intro.textContent = 'Compras e vendas por mês';
+  intro.textContent = 'Detalhamento por mês';
   section.appendChild(intro);
 
   keys.forEach(key=>{
@@ -984,6 +1105,82 @@ function renderOrderModal(){
     }
     await saveOrder(updated);
     closeOrderModal();
+    showToast('Salvo com sucesso.');
+  };
+}
+
+function openWithdrawalModal(w){
+  state.editingWithdrawal = w ? {...w} : {
+    id:cid(), person:'Léo', amount:'', date:new Date().toISOString().slice(0,10), notes:''
+  };
+  state.withdrawalModalOpen = true;
+  render();
+}
+function closeWithdrawalModal(){
+  state.withdrawalModalOpen = false;
+  state.editingWithdrawal = null;
+  render();
+}
+
+function renderWithdrawalModal(){
+  const w = state.editingWithdrawal;
+  const isEdit = (state.withdrawals||[]).some(x=>x.id===w.id);
+  const backdrop = document.createElement('div');
+  backdrop.className='modal-backdrop';
+  backdrop.onclick = (e)=>{ if(e.target===backdrop) closeWithdrawalModal(); };
+
+  const modal = document.createElement('div');
+  modal.className='modal';
+  modal.innerHTML = `
+    <h3>${isEdit?'Editar retirada':'Nova retirada'}</h3>
+    <div class="field"><label>Quem retirou</label>
+      <select id="w_person">
+        ${['Léo','Alemão'].map(p=>`<option value="${p}" ${w.person===p?'selected':''}>${p}</option>`).join('')}
+      </select>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Valor (R$)</label><input type="number" id="w_amount" value="${w.amount}" placeholder="0,00" /></div>
+      <div class="field"><label>Data</label><input type="date" id="w_date" value="${w.date||''}" /></div>
+    </div>
+    <div class="field"><label>Observação</label><input id="w_notes" value="${w.notes||''}" placeholder="Opcional" /></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="wCancelBtn">Cancelar</button>
+      <button class="btn btn-gold" id="wSaveBtn">Salvar</button>
+    </div>
+    ${isEdit?'<button class="danger-link" id="wDelBtn">Remover retirada</button>':''}
+  `;
+  backdrop.appendChild(modal);
+  root.appendChild(backdrop);
+
+  document.getElementById('wCancelBtn').onclick = closeWithdrawalModal;
+  if(isEdit) document.getElementById('wDelBtn').onclick = async ()=>{
+    if(confirm('Remover esta retirada?')){
+      state.withdrawals = state.withdrawals.filter(x=>x.id!==w.id);
+      await deleteWithdrawalRemote(w.id);
+      closeWithdrawalModal();
+      showToast('Retirada removida.');
+    }
+  };
+  document.getElementById('wSaveBtn').onclick = async ()=>{
+    const amount = document.getElementById('w_amount').value;
+    if(!amount){ showToast('Informe o valor da retirada.'); return; }
+    const btn = document.getElementById('wSaveBtn');
+    btn.disabled = true;
+    btn.textContent = 'Salvando...';
+    const updated = {
+      id: w.id,
+      person: document.getElementById('w_person').value,
+      amount,
+      date: document.getElementById('w_date').value,
+      notes: document.getElementById('w_notes').value.trim(),
+    };
+    if(isEdit){
+      state.withdrawals = state.withdrawals.map(x=>x.id===w.id?updated:x);
+    } else {
+      state.withdrawals.push(updated);
+    }
+    await saveWithdrawal(updated);
+    closeWithdrawalModal();
     showToast('Salvo com sucesso.');
   };
 }
