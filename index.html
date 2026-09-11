@@ -206,6 +206,7 @@ function fmtDate(d){
 
 const state = {
   unlocked:false,
+  expandedMonth:null,
   items:null,
   costs:null,
   tab:'list',
@@ -552,10 +553,21 @@ function computeStats(){
 
   const totalCosts = (state.costs||[]).reduce((s,c)=>s+num(c.amount),0);
   const totalWithdrawals = (state.withdrawals||[]).reduce((s,w)=>s+num(w.amount),0);
-  const cashOnHand = realizedProfit - totalCosts - totalWithdrawals;
+
+  // Cash flow: money that actually entered/left the register.
+  // Trades ("Troca") don't move cash when acquired, but still count as cost basis for profit above.
+  const cashIn = items.reduce((s,i)=>{
+    if(i.status==='Vendido' && i.realSale!=="") return s + (num(i.realSale)-num(i.saleCost));
+    return s;
+  },0);
+  const cashOutPurchases = items.reduce((s,i)=>{
+    if(i.acquisitionType==='Troca') return s;
+    return s + num(i.purchasePrice);
+  },0);
+  const cashOnHand = cashIn - cashOutPurchases - totalCosts - totalWithdrawals;
 
   return {total,available,sold,reserved,invested,predictedRevenue,predictedMargin,realizedProfit,
-    totalCosts, totalWithdrawals, cashOnHand};
+    totalCosts, totalWithdrawals, cashIn, cashOutPurchases, cashOnHand};
 }
 
 function renderDashboard(container){
@@ -591,7 +603,8 @@ function renderDashboard(container){
       <div class="stat-box neu"><div class="lbl">Total Investido</div><div class="val">${fmtBRL(s.invested)}</div></div>
       <div class="stat-box neu"><div class="lbl">Previsto em Vendas</div><div class="val">${fmtBRL(s.predictedRevenue)}</div></div>
       <div class="stat-box pos"><div class="lbl">Margem Prevista</div><div class="val">${fmtBRL(s.predictedMargin)}</div></div>
-      <div class="stat-box ${s.cashOnHand>=0?'pos':''}"><div class="lbl">Total em Caixa</div><div class="val" style="${s.cashOnHand<0?'color:var(--sold);':''}">${fmtBRL(s.cashOnHand)}</div></div>
+      <div class="stat-box ${s.realizedProfit>=0?'pos':''}"><div class="lbl">Lucro Total</div><div class="val" style="${s.realizedProfit<0?'color:var(--sold);':''}">${fmtBRL(s.realizedProfit)}</div></div>
+      <div class="stat-box ${s.cashOnHand>=0?'pos':''}" style="grid-column:1 / -1;"><div class="lbl">Total em Caixa (disponível pra comprar)</div><div class="val" style="font-size:24px;${s.cashOnHand<0?'color:var(--sold);':''}">${fmtBRL(s.cashOnHand)}</div></div>
     </div>
   `;
   container.appendChild(section);
@@ -747,10 +760,10 @@ function monthLabel(key){
 
 function buildMonthlyData(){
   const num = v => (v==="" || v===null || v===undefined || isNaN(v)) ? 0 : Number(v);
-  const months = {}; // key -> { purchCount, purchTotal, saleCount, saleTotal, profitTotal, costsTotal, netProfit }
+  const months = {}; // key -> { purchCount, purchTotal, saleCount, saleTotal, profitTotal, costsTotal, netProfit, soldItems }
 
   function ensure(key){
-    if(!months[key]) months[key] = {purchCount:0, purchTotal:0, saleCount:0, saleTotal:0, profitTotal:0, costsTotal:0, netProfit:0};
+    if(!months[key]) months[key] = {purchCount:0, purchTotal:0, saleCount:0, saleTotal:0, profitTotal:0, costsTotal:0, netProfit:0, soldItems:[]};
     return months[key];
   }
 
@@ -765,7 +778,13 @@ function buildMonthlyData(){
       const m2 = ensure(sKey);
       m2.saleCount += 1;
       m2.saleTotal += num(i.realSale);
-      m2.profitTotal += (num(i.realSale) - num(i.purchasePrice) - num(i.saleCost));
+      const itemProfit = num(i.realSale) - num(i.purchasePrice) - num(i.saleCost);
+      m2.profitTotal += itemProfit;
+      m2.soldItems.push({
+        id: i.id, model: i.model, color: i.color, owner: i.owner,
+        realSale: num(i.realSale), purchasePrice: num(i.purchasePrice),
+        saleCost: num(i.saleCost), profit: itemProfit
+      });
     }
   });
 
@@ -791,7 +810,6 @@ function renderMonthly(container){
   const s = computeStats();
   const num = v => (v==="" || v===null || v===undefined || isNaN(v)) ? 0 : Number(v);
   const totalSold = state.items.filter(i=>i.status==='Vendido' && i.realSale!=="");
-  const totalRevenue = totalSold.reduce((acc,i)=>acc+num(i.realSale),0);
 
   const summaryTitle = document.createElement('div');
   summaryTitle.className='section-title';
@@ -799,18 +817,26 @@ function renderMonthly(container){
   summaryTitle.textContent = 'Resumo geral (desde o início)';
   section.appendChild(summaryTitle);
 
+  const tradeTotal = s.invested - s.cashOutPurchases;
+
   const summaryCard = document.createElement('div');
   summaryCard.style.cssText = 'background:var(--surface);border:1px solid var(--gold);border-radius:16px;padding:16px;margin-bottom:18px;';
   summaryCard.innerHTML = `
-    <div style="display:flex;justify-content:space-between;padding:5px 0;font-size:13px;"><span style="color:var(--muted);">Total investido</span><b>${fmtBRL(s.invested)}</b></div>
-    <div style="display:flex;justify-content:space-between;padding:5px 0;font-size:13px;"><span style="color:var(--muted);">Total vendido (${totalSold.length})</span><b>${fmtBRL(totalRevenue)}</b></div>
-    <div style="display:flex;justify-content:space-between;padding:5px 0;font-size:13px;border-top:1px solid var(--border);margin-top:4px;padding-top:9px;"><span style="color:var(--muted);">Lucro total das vendas</span><b style="color:${s.realizedProfit>=0?'var(--ok)':'var(--sold)'};">${fmtBRL(s.realizedProfit)}</b></div>
+    <div style="display:flex;justify-content:space-between;padding:5px 0;font-size:13px;"><span style="color:var(--muted);">Total investido (todas as compras)</span><b>${fmtBRL(s.invested)}</b></div>
+    <div style="display:flex;justify-content:space-between;padding:5px 0;font-size:12px;"><span style="color:var(--muted);padding-left:8px;">— pago em dinheiro</span><span>${fmtBRL(s.cashOutPurchases)}</span></div>
+    ${tradeTotal>0?`<div style="display:flex;justify-content:space-between;padding:5px 0;font-size:12px;"><span style="color:var(--muted);padding-left:8px;">— troca/permuta (sem saída de caixa)</span><span>${fmtBRL(tradeTotal)}</span></div>`:''}
+    <div style="display:flex;justify-content:space-between;padding:5px 0;font-size:13px;margin-top:4px;"><span style="color:var(--muted);">Total recebido em vendas (${totalSold.length})</span><b>${fmtBRL(s.cashIn)}</b></div>
     <div style="display:flex;justify-content:space-between;padding:5px 0;font-size:13px;"><span style="color:var(--muted);">Custos operacionais</span><b style="color:var(--sold);">${s.totalCosts>0?'-':''}${fmtBRL(s.totalCosts)}</b></div>
     <div style="display:flex;justify-content:space-between;padding:5px 0;font-size:13px;"><span style="color:var(--muted);">Retiradas</span><b style="color:var(--sold);">${s.totalWithdrawals>0?'-':''}${fmtBRL(s.totalWithdrawals)}</b></div>
     <div style="display:flex;justify-content:space-between;align-items:center;padding-top:10px;margin-top:6px;border-top:1px solid var(--border);">
-      <span style="font-size:13px;font-weight:600;">Total em caixa</span>
+      <span style="font-size:13px;font-weight:600;">Lucro Total (das vendas)</span>
+      <span style="font-family:'Cormorant Garamond',serif;font-size:19px;font-weight:700;color:${s.realizedProfit>=0?'var(--ok)':'var(--sold)'};">${fmtBRL(s.realizedProfit)}</span>
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:center;padding-top:8px;margin-top:4px;">
+      <span style="font-size:13px;font-weight:600;">Total em Caixa (disponível)</span>
       <span style="font-family:'Cormorant Garamond',serif;font-size:21px;font-weight:700;color:${s.cashOnHand>=0?'var(--ok)':'var(--sold)'};">${fmtBRL(s.cashOnHand)}</span>
     </div>
+    <div style="font-size:10px;color:var(--muted);margin-top:8px;">Compras feitas por troca não descontam do caixa, mas continuam contando no cálculo de lucro.</div>
   `;
   section.appendChild(summaryCard);
 
@@ -837,12 +863,34 @@ function renderMonthly(container){
     card.style.borderRadius='16px';
     card.style.padding='16px';
     card.style.marginBottom='12px';
+    const canExpand = m.soldItems.length > 0;
+    if(canExpand) card.style.cursor='pointer';
+    const isExpanded = state.expandedMonth === key;
 
     const profitColor = m.profitTotal > 0 ? 'var(--ok)' : (m.profitTotal < 0 ? 'var(--sold)' : 'var(--muted)');
     const netColor = m.netProfit > 0 ? 'var(--ok)' : (m.netProfit < 0 ? 'var(--sold)' : 'var(--muted)');
 
+    const chevron = canExpand ? `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="var(--muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="transform:rotate(${isExpanded?'180deg':'0deg'});transition:transform .15s;"><polyline points="6 9 12 15 18 9"/></svg>` : '';
+
+    const soldListHtml = (canExpand && isExpanded) ? `
+      <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
+        ${m.soldItems.map(si => `
+          <div style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;">
+            <div>
+              <div style="font-size:12.5px;font-weight:600;">${si.model}${si.color?' · '+si.color:''}</div>
+              <div style="font-size:10.5px;color:var(--muted);">${si.owner} · lucro ${fmtBRL(si.profit)}</div>
+            </div>
+            <div style="font-family:'Cormorant Garamond',serif;font-size:15px;font-weight:700;">${fmtBRL(si.realSale)}</div>
+          </div>
+        `).join('')}
+      </div>
+    ` : '';
+
     card.innerHTML = `
-      <div style="font-family:'Cormorant Garamond',serif;font-size:17px;font-weight:700;color:var(--gold-bright);margin-bottom:12px;text-transform:capitalize;">${monthLabel(key)}</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <div style="font-family:'Cormorant Garamond',serif;font-size:17px;font-weight:700;color:var(--gold-bright);text-transform:capitalize;">${monthLabel(key)}</div>
+        ${chevron}
+      </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
         <div>
           <div style="font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px;">Compras (${m.purchCount})</div>
@@ -865,7 +913,14 @@ function renderMonthly(container){
         <span style="font-size:12px;color:var(--text);font-weight:600;">Lucro líquido</span>
         <span style="font-family:'Cormorant Garamond',serif;font-size:19px;font-weight:700;color:${netColor};">${fmtBRL(m.netProfit)}</span>
       </div>
+      ${soldListHtml}
     `;
+    if(canExpand){
+      card.onclick = ()=>{
+        state.expandedMonth = isExpanded ? null : key;
+        render();
+      };
+    }
     section.appendChild(card);
   });
 
@@ -1188,7 +1243,7 @@ function renderWithdrawalModal(){
 function openModal(item){
   state.editingItem = item ? {...item} : {
     id:cid(), owner:'Léo', model:'', color:'', condition:'Novo', purchaseDate:'',
-    purchasePrice:'', expectedSale:'', status:'Disponível', saleDate:'', realSale:''
+    purchasePrice:'', expectedSale:'', status:'Disponível', saleDate:'', realSale:'', acquisitionType:'Dinheiro'
   };
   state.modalOpen = true;
   render();
@@ -1227,6 +1282,12 @@ function renderModal(){
     <div class="field-row">
       <div class="field"><label>Data de compra</label><input type="date" id="f_pdate" value="${it.purchaseDate||''}" /></div>
       <div class="field"><label>Valor pago (R$)</label><input type="number" id="f_pprice" value="${it.purchasePrice}" placeholder="0,00" /></div>
+    </div>
+    <div class="field"><label>Forma de aquisição</label>
+      <select id="f_acqtype">
+        <option value="Dinheiro" ${(!it.acquisitionType || it.acquisitionType==='Dinheiro')?'selected':''}>Comprado em dinheiro</option>
+        <option value="Troca" ${it.acquisitionType==='Troca'?'selected':''}>Troca/permuta (não saiu dinheiro do caixa)</option>
+      </select>
     </div>
     <div class="field"><label>Valor de venda previsto (R$)</label><input type="number" id="f_esale" value="${it.expectedSale}" placeholder="0,00" /></div>
     <div class="field"><label>Status</label>
@@ -1276,6 +1337,7 @@ function renderModal(){
       color: document.getElementById('f_color').value.trim(),
       purchaseDate: document.getElementById('f_pdate').value,
       purchasePrice: document.getElementById('f_pprice').value,
+      acquisitionType: document.getElementById('f_acqtype').value,
       expectedSale: document.getElementById('f_esale').value,
       status: document.getElementById('f_status').value,
       saleDate: document.getElementById('f_sdate') ? document.getElementById('f_sdate').value : (it.saleDate||''),
